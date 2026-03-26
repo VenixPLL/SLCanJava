@@ -72,12 +72,20 @@ public class CanInterface implements SerialPortEventListener, AutoCloseable {
     private final LinkedBlockingQueue<byte[]> messageQueue = new LinkedBlockingQueue<>(50000);
     private final byte[] rxBuffer = new byte[RX_BUFFER_CAPACITY];
     private final Thread processorThread;
+    private final ExecutorService writeExecutor = Executors.newSingleThreadExecutor(r -> {
+        final var t = new Thread(r, "CAN-Writer-Thread");
+        t.setDaemon(true);
+        return t;
+    });
 
     private int rxBufferLength = 0;
     private volatile boolean isRunning = true;
 
     @Setter
     private BiConsumer<CanInterface,CanFrame> frameHandler;
+
+    @Setter
+    private Consumer<String> onDisconnectedHandler;
 
     /**
      * Opens and initializes the SLCAN interface, then starts the processing thread.
@@ -114,15 +122,65 @@ public class CanInterface implements SerialPortEventListener, AutoCloseable {
     }
 
     /**
-     * Sends a command and enqueues a callback that is resolved on ACK/NACK.
+     * Callback invoked when the serial port is disconnected.
+     * @param reason reason for disconnection
+     */
+    private void handleHardwareDisconnect(String reason) {
+        if (!this.isRunning) return;
+
+        System.err.println("[CAN HARDWARE] Interface disconnected: " + reason);
+        this.isRunning = false;
+        this.processorThread.interrupt();
+        this.writeExecutor.shutdownNow();
+
+        try {
+            if (this.serialPort != null) {
+                this.serialPort.removeEventListener();
+                if (this.serialPort.isOpened()) {
+                    this.serialPort.closePort();
+                }
+            }
+        } catch (Exception ignored) {}
+
+        if (this.onDisconnectedHandler != null) {
+            this.onDisconnectedHandler.accept(reason);
+        }
+    }
+
+    /**
+     * Sends a command asynchronously with a safety timeout.
+     * Prevents the application from freezing if JSSC gets permanently blocked
+     * by the OS during a surprise USB removal.
      *
      * @param str command to send (typically terminated with {@code \r})
      * @param callback callback invoked on command status, may be null
-     * @throws SerialPortException when write fails
      */
-    public void writeString(final String str, final Consumer<Status> callback) throws SerialPortException {
-        this.pendingCallbacks.offer(callback != null ? callback : NO_OP_CALLBACK);
-        this.serialPort.writeBytes(str.getBytes(StandardCharsets.US_ASCII));
+    public void writeString(final String str, final Consumer<Status> callback) {
+        final Consumer<Status> actualCallback = callback != null ? callback : NO_OP_CALLBACK;
+        if (!this.isRunning) {
+            throw new IllegalStateException("Interface disconnected!");
+        }
+
+        this.pendingCallbacks.offer(actualCallback);
+
+        CompletableFuture.supplyAsync(() -> {
+                    try {
+                        return this.serialPort.writeBytes(str.getBytes(StandardCharsets.US_ASCII));
+                    } catch (SerialPortException e) {
+                        throw new CompletionException(e);
+                    }
+                }, this.writeExecutor)
+                .orTimeout(500, TimeUnit.MILLISECONDS)
+                .whenComplete((result, ex) -> {
+                    if (ex != null || (result != null && !result)) {
+
+                        this.pendingCallbacks.remove(actualCallback);
+                        actualCallback.accept(Status.NOK);
+
+                        final String reason = ex != null ? ex.getMessage() : "Native write returned false";
+                        this.handleHardwareDisconnect("Writing fault (Surprise Removal) - " + reason);
+                    }
+                });
     }
 
     /**
@@ -153,7 +211,7 @@ public class CanInterface implements SerialPortEventListener, AutoCloseable {
             }
 
             if (rxBufferLength + newBytes.length > rxBuffer.length) {
-                System.err.println("[CAN ERROR] Buffer overflow!");
+                System.err.println("[ERROR] Buffer overflow!");
                 rxBufferLength = 0;
             }
 
@@ -185,8 +243,7 @@ public class CanInterface implements SerialPortEventListener, AutoCloseable {
                 }
             }
         } catch (final SerialPortException e) {
-            System.err.println("Serial port decoding failure: " + e.getMessage());
-            e.printStackTrace();
+            this.handleHardwareDisconnect("Reading fault - " + e.getMessage());
         }
     }
 
@@ -252,7 +309,13 @@ public class CanInterface implements SerialPortEventListener, AutoCloseable {
     public void close() throws Exception {
         this.isRunning = false;
         this.processorThread.interrupt();
-        this.writeString("C\r");
+
+        try {
+            this.writeString("C\r");
+        } catch(Exception ignored) {}
+
+        this.writeExecutor.shutdown();
+
         if (this.serialPort != null && this.serialPort.isOpened()) {
             this.serialPort.removeEventListener();
             this.serialPort.closePort();

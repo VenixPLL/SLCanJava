@@ -2,7 +2,6 @@ import org.lightsolutions.slcan.SLCanJava;
 import org.lightsolutions.slcan.serial.CanInterface;
 
 import java.util.Arrays;
-import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 
 public class SerialPortTest {
@@ -18,16 +17,18 @@ public class SerialPortTest {
 
         System.out.println("Serial port interface test");
 
-        try (var canInterface = SLCanJava.openInterface("COM7", CanInterface.NominalSpeed.S8_1M, CanInterface.DataSpeed.Y5_5M)) {
-            System.out.println("Trying to send message to " + canInterface.getSerialPort().getPortName());
+        var canInterface = SLCanJava.openInterface("COM7", CanInterface.NominalSpeed.S8_1M, CanInterface.DataSpeed.Y5_5M);
+        System.out.println("Trying to send message to " + canInterface.getSerialPort().getPortName());
 
-            CompletableFuture<CanInterface.Status> future = new CompletableFuture<>();
+        canInterface.setOnDisconnectedHandler(System.out::println);
 
-            canInterface.writeString("t1234AABBCCDD\r", future::complete);
-
-            CanInterface.Status status = future.get(2, TimeUnit.SECONDS);
-            System.out.println("Status: " + status);
+        while(true) {
+            TimeUnit.MILLISECONDS.sleep(100);
+            canInterface.writeString("t1234AABBCCDD\r", status -> {
+                System.out.println("Callback: " + status.name());
+            });
         }
+
     }
 
 }
