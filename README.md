@@ -78,13 +78,11 @@ public class Example {
                     0x123,
                     8,
                     new byte[]{(byte) 0xAA, (byte) 0xBB, (byte) 0xCC, (byte) 0xDD,
-                               0x11, 0x22, 0x33, 0x44},
-                    false,
-                    false,
-                    false,
-                    false
+                            0x11, 0x22, 0x33, 0x44},
+                    false, false, false, false
             );
-            can.writeString(new String(tx.encodeAsBytes(), StandardCharsets.US_ASCII));
+            
+            can.writeFrame(tx, status -> System.out.println("Frame send status: " + status));
         }
     }
 }

@@ -194,6 +194,48 @@ public class CanInterface implements SerialPortEventListener, AutoCloseable {
     }
 
     /**
+     * Sends a parsed CAN frame with zero-allocation overhead.
+     *
+     * @param frame CanFrame to send
+     * @param callback callback invoked on command status may be null
+     */
+    public void writeFrame(final CanFrame frame, final Consumer<Status> callback) {
+        final Consumer<Status> actualCallback = callback != null ? callback : NO_OP_CALLBACK;
+
+        if (!this.isRunning) {
+            actualCallback.accept(Status.NOK);
+            return;
+        }
+
+        this.pendingCallbacks.offer(actualCallback);
+
+        CompletableFuture.supplyAsync(() -> {
+                    try {
+                        return this.serialPort.writeBytes(frame.encodeAsBytes());
+                    } catch (SerialPortException e) {
+                        throw new CompletionException(e);
+                    }
+                }, this.writeExecutor)
+                .orTimeout(500, TimeUnit.MILLISECONDS)
+                .whenComplete((result, ex) -> {
+                    if (ex != null || (result != null && !result)) {
+                        this.pendingCallbacks.remove(actualCallback);
+                        actualCallback.accept(Status.NOK);
+                        final String reason = ex != null ? ex.getMessage() : "Native write returned false";
+                        this.handleHardwareDisconnect("Writing fault - " + reason);
+                    }
+                });
+    }
+
+    /**
+     * Sends a parsed CAN frame without a caller-provided callback.
+     * @param frame CanFrame to send
+     */
+    public void writeFrame(final CanFrame frame) {
+        this.writeFrame(frame, NO_OP_CALLBACK);
+    }
+
+    /**
      * Buffers bytes from the serial event stream and extracts complete frames.
      *
      * @param event serial event from JSSC
