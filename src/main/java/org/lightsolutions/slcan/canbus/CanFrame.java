@@ -12,7 +12,8 @@ public record CanFrame(
         boolean isExtended,
         boolean isRemote,
         boolean isFd,
-        boolean isBrs
+        boolean isBrs,
+        long timestamp
 ) {
 
     /** Maps DLC value (0-15) to payload length in bytes for CAN-FD. */
@@ -31,6 +32,7 @@ public record CanFrame(
      * @throws IllegalArgumentException when frame type/format is invalid
      */
     public static CanFrame decode(final byte[] message) {
+        final var nanos = System.nanoTime();
         if (message == null || message.length == 0) {
             return null;
         }
@@ -110,7 +112,7 @@ public record CanFrame(
             }
         }
 
-        return new CanFrame(id, dlcHex, payload, extended, remote, fd, brs);
+        return new CanFrame(id, dlcHex, payload, extended, remote, fd, brs, nanos);
     }
 
     /**
