@@ -59,7 +59,8 @@ public class Example {
         try (CanInterface can = SLCanJava.openInterface(
                 "COM7",
                 CanInterface.NominalSpeed.S8_1M,
-                CanInterface.DataSpeed.Y5_5M
+                CanInterface.DataSpeed.Y5_5M,
+                CanInterface.OperationMode.SILENT
         )) {
             can.setOnDisconnectedHandler(reason ->
                     System.err.println("Interface disconnected: " + reason));
@@ -83,6 +84,9 @@ public class Example {
             );
             
             can.writeFrame(tx, status -> System.out.println("Frame send status: " + status));
+
+            // Switch mode at runtime and confirm ACK/NACK from adapter
+            can.setSilentMode(false, status -> System.out.println("Silent mode change: " + status));
         }
     }
 }

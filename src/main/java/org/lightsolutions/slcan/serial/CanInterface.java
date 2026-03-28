@@ -56,11 +56,23 @@ public class CanInterface implements SerialPortEventListener, AutoCloseable {
         }
     }
 
+    public enum OperationMode {
+        NORMAL("M0"),
+        SILENT("M1");
+
+        public final String cmd;
+
+        OperationMode(final String cmd) {
+            this.cmd = cmd;
+        }
+    }
+
     private static final Consumer<Status> NO_OP_CALLBACK = _ -> {};
     private static final int BAUD_RATE = 115200;
     private static final int DATA_BITS = 8;
     private static final int STOP_BITS = 1;
     private static final int PARITY_NONE = 0;
+    private static final long COMMAND_ACK_TIMEOUT_MS = 1000;
     private static final byte CARRIAGE_RETURN = '\r';
     private static final byte NACK = 0x07;
     private static final int RX_BUFFER_CAPACITY = 16384;
@@ -72,14 +84,12 @@ public class CanInterface implements SerialPortEventListener, AutoCloseable {
     private final LinkedBlockingQueue<byte[]> messageQueue = new LinkedBlockingQueue<>(50000);
     private final byte[] rxBuffer = new byte[RX_BUFFER_CAPACITY];
     private final Thread processorThread;
-    private final ExecutorService writeExecutor = Executors.newSingleThreadExecutor(r -> {
-        final var t = new Thread(r, "CAN-Writer-Thread");
-        t.setDaemon(true);
-        return t;
-    });
+    private final ExecutorService writeExecutor;
 
     private int rxBufferLength = 0;
     private volatile boolean isRunning = true;
+    @Getter
+    private volatile OperationMode operationMode;
 
     @Setter
     private BiConsumer<CanInterface,CanFrame> frameHandler;
@@ -100,25 +110,75 @@ public class CanInterface implements SerialPortEventListener, AutoCloseable {
             final NominalSpeed nomSpeed,
             final DataSpeed dataSpeed
     ) throws SerialPortException, ExecutionException, InterruptedException {
+        this(serialPort, nomSpeed, dataSpeed, OperationMode.NORMAL);
+    }
+
+    /**
+     * Opens and initializes the SLCAN interface, then starts the processing thread.
+     *
+     * @param serialPort serial device wrapper
+     * @param nomSpeed nominal CAN bitrate command
+     * @param dataSpeed CAN FD data bitrate command
+     * @param operationMode initial interface mode (normal or silent)
+     * @throws SerialPortException when port open/write operations fail
+     */
+    public CanInterface(
+            final SerialPort serialPort,
+            final NominalSpeed nomSpeed,
+            final DataSpeed dataSpeed,
+            final OperationMode operationMode
+    ) throws SerialPortException, ExecutionException, InterruptedException {
         this.serialPort = serialPort;
         this.serialPort.openPort();
         this.serialPort.setParams(BAUD_RATE, DATA_BITS, STOP_BITS, PARITY_NONE);
 
-        this.processorThread = new Thread(this::processQueue, "CAN-Processor-Thread");
+        // WRITE
+        this.writeExecutor = Executors.newSingleThreadExecutor(r -> {
+            final var t = new Thread(r, "CAN-Writer-Thread-" + this.serialPort.getPortName());
+            t.setDaemon(true);
+            return t;
+        });
+
+        // READ
+        this.processorThread = new Thread(this::processQueue, "CAN-Processor-Thread-" + serialPort.getPortName());
         this.processorThread.start();
 
         this.serialPort.addEventListener(this);
-        final var future = new CompletableFuture<Status>();
-
-        this.writeString("C\r");
-        this.writeString(nomSpeed.cmd + "\r");
-        this.writeString(dataSpeed.cmd + "\r");
-        this.writeString("O\r", future::complete);
-
-        final var result = future.get();
-        if(result != Status.OK) throw new RuntimeException("Failed to initialize CAN interface, Interface cannot be put into ready state!");
+        this.sendCommandAndAwaitAck("C\r", "close channel");
+        this.sendCommandAndAwaitAck(nomSpeed.cmd + "\r", "set nominal speed");
+        this.sendCommandAndAwaitAck(dataSpeed.cmd + "\r", "set data speed");
+        this.sendCommandAndAwaitAck(operationMode.cmd + "\r", "set operation mode");
+        this.sendCommandAndAwaitAck("O\r", "open channel");
+        this.operationMode = operationMode;
 
         assert this.serialPort.isOpened();
+    }
+
+    /**
+     * Switches operation mode between normal and silent.
+     *
+     * @param silent true for silent mode, false for normal mode
+     * @param callback callback invoked when ACK/NACK is received
+     */
+    public void setSilentMode(final boolean silent, final Consumer<Status> callback) {
+        final OperationMode targetMode = silent ? OperationMode.SILENT : OperationMode.NORMAL;
+        this.writeString(targetMode.cmd + "\r", status -> {
+            if (status == Status.OK) {
+                this.operationMode = targetMode;
+            }
+            if (callback != null) {
+                callback.accept(status);
+            }
+        });
+    }
+
+    /**
+     * Switches operation mode between normal and silent without a callback.
+     *
+     * @param silent true for silent mode, false for normal mode
+     */
+    public void setSilentMode(final boolean silent) {
+        this.setSilentMode(silent, NO_OP_CALLBACK);
     }
 
     /**
@@ -250,36 +310,36 @@ public class CanInterface implements SerialPortEventListener, AutoCloseable {
                 return;
             }
 
-            if (rxBufferLength + newBytes.length > rxBuffer.length) {
+            if (this.rxBufferLength + newBytes.length > this.rxBuffer.length) {
                 System.err.println("[ERROR] Buffer overflow!");
-                rxBufferLength = 0;
+                this.rxBufferLength = 0;
             }
 
-            System.arraycopy(newBytes, 0, rxBuffer, rxBufferLength, newBytes.length);
-            rxBufferLength += newBytes.length;
+            System.arraycopy(newBytes, 0, this.rxBuffer, this.rxBufferLength, newBytes.length);
+            this.rxBufferLength += newBytes.length;
 
             int scanStart = 0;
-            for (int i = 0; i < rxBufferLength; i++) {
-                if (rxBuffer[i] == CARRIAGE_RETURN) {
+            for (int i = 0; i < this.rxBufferLength; i++) {
+                if (this.rxBuffer[i] == CARRIAGE_RETURN) {
                     int frameLength = i - scanStart;
                     if (frameLength > 0) {
                         byte[] frame = new byte[frameLength];
-                        System.arraycopy(rxBuffer, scanStart, frame, 0, frameLength);
-                        messageQueue.offer(frame);
+                        System.arraycopy(this.rxBuffer, scanStart, frame, 0, frameLength);
+                        this.messageQueue.offer(frame);
                     } else {
-                        messageQueue.offer(new byte[0]);
+                        this.messageQueue.offer(new byte[0]);
                     }
                     scanStart = i + 1;
-                } else if (rxBuffer[i] == NACK) {
-                    messageQueue.offer(new byte[] { NACK });
+                } else if (this.rxBuffer[i] == NACK) {
+                    this.messageQueue.offer(new byte[] { NACK });
                     scanStart = i + 1;
                 }
             }
 
             if (scanStart > 0) {
-                rxBufferLength -= scanStart;
-                if (rxBufferLength > 0) {
-                    System.arraycopy(rxBuffer, scanStart, rxBuffer, 0, rxBufferLength);
+                this.rxBufferLength -= scanStart;
+                if (this.rxBufferLength > 0) {
+                    System.arraycopy(this.rxBuffer, scanStart, this.rxBuffer, 0, this.rxBufferLength);
                 }
             }
         } catch (final SerialPortException e) {
@@ -338,6 +398,26 @@ public class CanInterface implements SerialPortEventListener, AutoCloseable {
     private boolean isCanFrameType(byte type) {
         return type == 't' || type == 'T' || type == 'r' || type == 'R'
                 || type == 'd' || type == 'D' || type == 'b' || type == 'B';
+    }
+
+    /**
+     * Sends a command and blocks until ACK/NACK is received.
+     *
+     * @param command command string terminated with CR
+     * @param operation operation description used in exceptions
+     */
+    private void sendCommandAndAwaitAck(final String command, final String operation)
+            throws ExecutionException, InterruptedException {
+        final var future = new CompletableFuture<Status>();
+        this.writeString(command, future::complete);
+        try {
+            final var result = future.get(COMMAND_ACK_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+            if (result != Status.OK) {
+                throw new RuntimeException("Failed to " + operation + " (NACK)");
+            }
+        } catch (TimeoutException e) {
+            throw new RuntimeException("Timeout waiting for ACK while trying to " + operation, e);
+        }
     }
 
     /**

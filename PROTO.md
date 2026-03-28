@@ -49,6 +49,8 @@
 - [CR]: transmission successful
 - 0x07: transmission failed
 
+For mode changes (`M0`/`M1`), this ACK/NACK confirms whether the interface accepted the normal/silent mode switch.
+
 **Note**  
 The CANFD message length is as follows (in hex):
 - `0-8` : Same as standard CAN
