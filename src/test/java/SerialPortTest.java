@@ -8,15 +8,21 @@ import java.util.concurrent.TimeUnit;
 public class SerialPortTest {
 
     private static long lastFrameTimestampNanos = -1L;
+    private static double distanceAccumulator = 0.0;
 
-    static void main() throws Exception {
+    /**
+     * Test for AUDI A3 8P Instrument Cluster - USB2CANFD V1 WeAct
+     * @param args
+     * @throws Exception
+     */
+    public static void main(String[] args) throws Exception {
         System.out.println("Serial port list test");
         System.out.println(Arrays.toString(SLCanJava.getAvailableSerialPorts()));
 
         System.out.println("Serial port listener test");
         SLCanJava.listenForSerialPortChanges(arr -> {
             System.out.println(Arrays.toString(arr));
-            throw new RuntimeException(); // Quiet exception here causes the listener to stop.
+            throw new RuntimeException();
         });
 
         System.out.println("Serial port interface test");
@@ -30,57 +36,153 @@ public class SerialPortTest {
 
         canInterface.setOnDisconnectedHandler(System.out::println);
 
-        canInterface.setFrameHandler((ignoredInterface, frame) -> {
-            long elapsedNanos = getElapsedNanosSincePreviousFrame(frame);
-            String elapsedText = elapsedNanos < 0 ? "first frame" : formatElapsed(elapsedNanos) + " ago";
-            System.out.println("RX CAN Frame: " + frame.id() + " " + Arrays.toString(frame.data()) + " " + elapsedText);
-        });
+        double currentSpeedKmh = 0.0;
+        int currentGear = 1;
+        boolean isAccelerating = true;
 
-        boolean increasing = true;
-        int rpmValue = 0;
+        final double[] gearRatios = {0.0, 8.0, 14.0, 20.0, 28.0, 36.0, 43.0};
+
+        int loopCounter = 0;
 
         while (true) {
-            // AUDI A3 8P SIEMENS Instrument Cluster WakeUP and RPM Signal.
             TimeUnit.MILLISECONDS.sleep(10);
+
+            if (isAccelerating) {
+                currentSpeedKmh += 0.08;
+                if (currentSpeedKmh >= 240.0) {
+                    currentSpeedKmh = 240.0;
+                    isAccelerating = false;
+                    System.out.println("--- V-MAX 240 km/h Starting to brake ---");
+                }
+            } else {
+                currentSpeedKmh -= 0.15;
+                if (currentSpeedKmh <= 0.0) {
+                    currentSpeedKmh = 0.0;
+                    currentGear = 1;
+                    isAccelerating = true;
+                    System.out.println("--- Stopped! Starting again ---");
+                    TimeUnit.SECONDS.sleep(2);
+                }
+            }
+
+            double currentRatio = gearRatios[currentGear];
+            int currentRpm = (int) ((currentSpeedKmh / currentRatio) * 1000.0);
+
+            if (isAccelerating && currentRpm > 6200 && currentGear < 6) {
+                currentGear++;
+                currentRpm = (int) ((currentSpeedKmh / gearRatios[currentGear]) * 1000.0);
+            }
+
+            if (!isAccelerating && currentRpm < 2500 && currentGear > 1) {
+                currentGear--;
+                currentRpm = (int) ((currentSpeedKmh / gearRatios[currentGear]) * 1000.0);
+            }
+            if (currentRpm < 850) {
+                currentRpm = 850;
+            }
+
+            loopCounter++;
+            if (loopCounter % 20 == 0) { // Co 200ms
+                System.out.printf("Mode: %-10s | Gear: %d | Speed: %5.1f km/h | RPM: %4d RPM\n",
+                        isAccelerating ? "ACCELERATING" : "BRAKING", currentGear, currentSpeedKmh, currentRpm);
+            }
 
             final var wakeupData = new byte[8];
             Arrays.fill(wakeupData, (byte) 0xFF);
+            canInterface.writeFrame(new CanFrame(0x575, 8, wakeupData, false, false, false, false, 0), _ -> {});
 
-            final var wakeup = new CanFrame(0x575, 8, wakeupData, false, false, false, false,0);
-            canInterface.writeFrame(wakeup, _ -> {});
+            final var rpmData = getRpmPayload(currentRpm);
+            canInterface.writeFrame(new CanFrame(0x280, 8, rpmData, false, false, false, false, 0), _ -> {});
 
-            final var rpmData = getRpmPayload(rpmValue);
-            final var rpm = new CanFrame(0x280, 8, rpmData, false, false, false, false,0);
-            canInterface.writeFrame(rpm, _ -> {
-            });
+            final var speedometerData = getSpeedometerPayload(currentSpeedKmh);
+            canInterface.writeFrame(new CanFrame(0x5A0, 8, speedometerData, false, false, false, false, 0), _ -> {});
 
-            if (increasing) {
-                rpmValue += 8;
-            } else {
-                rpmValue -= 8;
-            }
+            final var absData = getAbsPayload(currentSpeedKmh);
+            canInterface.writeFrame(new CanFrame(0x1A0, 8, absData, false, false, false, false, 0), _ -> {});
 
-            if (rpmValue >= 8000) {
-                increasing = false;
-            }
-            if (rpmValue <= 0) {
-                increasing = true;
-            }
+            final var speedData = getSpeedPayload(currentSpeedKmh);
+            canInterface.writeFrame(new CanFrame(0x1A0, 8, speedData, false, false, false, false, 0), _ -> {});
+
+            final var ignitionData = new byte[]{(byte)0x11, 0, 0, 0, 0, 0, 0, 0};
+            canInterface.writeFrame(new CanFrame(0x271, 8, ignitionData, false, false, false, false, 0), _ -> {});
         }
     }
 
+    public static byte[] getSpeedometerPayload(double speedKmh) {
+        if (speedKmh < 0) speedKmh = 0;
+        if (speedKmh > 300) speedKmh = 300;
+
+        int speedVal = (int) (speedKmh * 148.0);
+
+        distanceAccumulator += (speedKmh / 3.6) * 0.01 * 50.0;
+
+        if (distanceAccumulator > 30000) {
+            distanceAccumulator -= 30000;
+        }
+        int distVal = (int) distanceAccumulator;
+
+        final byte[] payload = new byte[8];
+        payload[0] = (byte) 0xFF;
+
+        payload[1] = (byte) (speedVal & 0xFF);
+        payload[2] = (byte) ((speedVal >> 8) & 0xFF);
+
+        payload[3] = (byte) 0x00;
+        payload[4] = (byte) 0x00;
+
+        payload[5] = (byte) (distVal & 0xFF);
+        payload[6] = (byte) ((distVal >> 8) & 0xFF);
+
+        payload[7] = (byte) 0xAD; // CRC
+
+        return payload;
+    }
+
+    public static byte[] getAbsPayload(double speedKmh) {
+        if (speedKmh < 0) speedKmh = 0;
+        if (speedKmh > 300) speedKmh = 300;
+
+        int speedVal = (int) (speedKmh * 100.0);
+        final byte[] payload = new byte[8];
+
+        payload[0] = (byte) 0x00; // Status ABS (0x00 = OK)
+        payload[1] = (byte) 0x00;
+
+        payload[2] = (byte) (speedVal & 0xFF);
+        payload[3] = (byte) ((speedVal >> 8) & 0xFF);
+
+        return payload;
+    }
+
     public static byte[] getRpmPayload(int rpm) {
-        if (rpm < 0) {
-            rpm = 0;
-        }
-        if (rpm > 8000) {
-            rpm = 8000;
-        }
+        if (rpm < 0) rpm = 0;
+        if (rpm > 8000) rpm = 8000;
 
         final int rawValue = rpm * 4;
         final byte[] payload = new byte[8];
+
+        payload[0] = (byte) 0x49;
+        payload[1] = (byte) 0x00;
+
+        // Obroty
         payload[2] = (byte) (rawValue & 0xFF);
         payload[3] = (byte) ((rawValue >> 8) & 0xFF);
+
+        return payload;
+    }
+
+    public static byte[] getSpeedPayload(double speedKmh) {
+        if (speedKmh < 0) speedKmh = 0;
+        if (speedKmh > 300) speedKmh = 300;
+
+        int rawValue = (int) (speedKmh * 100.0);
+
+        final byte[] payload = new byte[8];
+
+        payload[0] = (byte) 0x00;
+
+        payload[1] = (byte) (rawValue & 0xFF);
+        payload[2] = (byte) ((rawValue >> 8) & 0xFF);
 
         return payload;
     }
@@ -102,15 +204,9 @@ public class SerialPortTest {
     }
 
     private static String formatElapsed(long nanos) {
-        if (nanos < 1_000) {
-            return nanos + "ns";
-        }
-        if (nanos < 1_000_000) {
-            return String.format("%.3fus", nanos / 1_000.0);
-        }
-        if (nanos < 1_000_000_000) {
-            return String.format("%.3fms", nanos / 1_000_000.0);
-        }
+        if (nanos < 1_000) { return nanos + "ns"; }
+        if (nanos < 1_000_000) { return String.format("%.3fus", nanos / 1_000.0); }
+        if (nanos < 1_000_000_000) { return String.format("%.3fms", nanos / 1_000_000.0); }
         return String.format("%.3fs", nanos / 1_000_000_000.0);
     }
 }

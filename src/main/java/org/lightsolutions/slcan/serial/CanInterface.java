@@ -187,9 +187,8 @@ public class CanInterface implements SerialPortEventListener, AutoCloseable {
      * Sends a command without a caller-provided callback.
      *
      * @param str command to send (typically terminated with {@code \r})
-     * @throws SerialPortException when write fails
      */
-    public void writeString(final String str) throws SerialPortException {
+    public void writeString(final String str) {
         this.writeString(str, NO_OP_CALLBACK);
     }
 
@@ -203,8 +202,7 @@ public class CanInterface implements SerialPortEventListener, AutoCloseable {
         final Consumer<Status> actualCallback = callback != null ? callback : NO_OP_CALLBACK;
 
         if (!this.isRunning) {
-            actualCallback.accept(Status.NOK);
-            return;
+            throw new IllegalStateException("Interface disconnected!");
         }
 
         this.pendingCallbacks.offer(actualCallback);
