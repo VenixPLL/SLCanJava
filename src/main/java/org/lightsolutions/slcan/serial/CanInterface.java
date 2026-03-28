@@ -6,6 +6,7 @@ import jssc.SerialPortEventListener;
 import jssc.SerialPortException;
 import lombok.Getter;
 import lombok.Setter;
+import org.lightsolutions.slcan.SLCanJava;
 import org.lightsolutions.slcan.canbus.CanFrame;
 import org.lightsolutions.slcan.canbus.CanVersion;
 
@@ -13,6 +14,8 @@ import java.nio.charset.StandardCharsets;
 import java.util.concurrent.*;
 import java.util.function.BiConsumer;
 import java.util.function.Consumer;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 
 /**
  * Threaded SLCAN serial interface.
@@ -57,6 +60,7 @@ public class CanInterface implements SerialPortEventListener, AutoCloseable {
     }
 
     private static final Consumer<Status> NO_OP_CALLBACK = _ -> {};
+    private static final Logger LOGGER = SLCanJava.LOGGER;
     private static final int BAUD_RATE = 115200;
     private static final int DATA_BITS = 8;
     private static final int STOP_BITS = 1;
@@ -128,7 +132,7 @@ public class CanInterface implements SerialPortEventListener, AutoCloseable {
     private void handleHardwareDisconnect(String reason) {
         if (!this.isRunning) return;
 
-        System.err.println("[CAN HARDWARE] Interface disconnected: " + reason);
+        LOGGER.log(Level.SEVERE, "[CAN HARDWARE] Interface disconnected: {0}", reason);
         this.isRunning = false;
         this.processorThread.interrupt();
         this.writeExecutor.shutdownNow();
@@ -140,7 +144,9 @@ public class CanInterface implements SerialPortEventListener, AutoCloseable {
                     this.serialPort.closePort();
                 }
             }
-        } catch (Exception ignored) {}
+        } catch (Exception e) {
+            LOGGER.log(Level.FINE, "Error during disconnect cleanup", e);
+        }
 
         if (this.onDisconnectedHandler != null) {
             this.onDisconnectedHandler.accept(reason);
@@ -251,7 +257,7 @@ public class CanInterface implements SerialPortEventListener, AutoCloseable {
             }
 
             if (rxBufferLength + newBytes.length > rxBuffer.length) {
-                System.err.println("[ERROR] Buffer overflow!");
+                LOGGER.warning("[ERROR] Buffer overflow!");
                 rxBufferLength = 0;
             }
 
@@ -314,15 +320,15 @@ public class CanInterface implements SerialPortEventListener, AutoCloseable {
                         final var frame = CanFrame.decode(frameBytes);
                         if(this.frameHandler != null) this.frameHandler.accept(this, frame);
                     } catch (Exception e) {
-                        System.err.println("[CAN ERROR] Failed to parse CAN frame: " + e.getMessage());
+                        LOGGER.log(Level.WARNING, "[CAN ERROR] Failed to parse CAN frame: {0}", e.getMessage());
                     }
                 } else if (type == 'V' || type == 'v') {
                     final var version = CanVersion.decode(frameBytes);
                     if (version != null) {
-                        System.out.println("[CAN] Version: " + version.versionString());
+                        LOGGER.log(Level.INFO, "[CAN] Version: {0}", version.versionString());
                     }
                 } else {
-                    System.out.println("[CAN UNKNOWN] Unknown frame type: " + (char) type);
+                    LOGGER.log(Level.INFO, "[CAN UNKNOWN] Unknown frame type: {0}", (char) type);
                 }
             }
         } catch (final InterruptedException e) {

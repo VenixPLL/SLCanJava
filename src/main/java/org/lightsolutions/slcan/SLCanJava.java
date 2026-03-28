@@ -8,8 +8,11 @@ import org.lightsolutions.slcan.serial.port.SerialPortListener;
 import java.io.IOException;
 import java.util.concurrent.Executors;
 import java.util.function.Consumer;
+import java.util.logging.Logger;
 
 public class SLCanJava {
+
+    public static final Logger LOGGER = Logger.getLogger(SLCanJava.class.getName());
 
     /**
      * Opens a serial port.

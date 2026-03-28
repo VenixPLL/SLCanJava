@@ -16,17 +16,6 @@ public class SerialPortTest {
      * @throws Exception
      */
     public static void main(String[] args) throws Exception {
-        System.out.println("Serial port list test");
-        System.out.println(Arrays.toString(SLCanJava.getAvailableSerialPorts()));
-
-        System.out.println("Serial port listener test");
-        SLCanJava.listenForSerialPortChanges(arr -> {
-            System.out.println(Arrays.toString(arr));
-            throw new RuntimeException();
-        });
-
-        System.out.println("Serial port interface test");
-
         var canInterface = SLCanJava.openInterface(
                 "COM7",
                 CanInterface.NominalSpeed.S6_500K,
@@ -105,7 +94,20 @@ public class SerialPortTest {
 
             final var ignitionData = new byte[]{(byte)0x11, 0, 0, 0, 0, 0, 0, 0};
             canInterface.writeFrame(new CanFrame(0x271, 8, ignitionData, false, false, false, false, 0), _ -> {});
+
+            canInterface.writeFrame(getIlluminationFrame(), _ -> {});
         }
+    }
+
+    public static CanFrame getIlluminationFrame() {
+        byte[] data = new byte[8];
+
+        data[0] = (byte) 0x01;
+        data[1] = (byte) 0xFF;
+        data[2] = (byte) 0x00;
+        data[3] = (byte) 0x00;
+
+        return new CanFrame(0x3C0, 8, data, false, false, false, false, 0);
     }
 
     public static byte[] getSpeedometerPayload(double speedKmh) {
