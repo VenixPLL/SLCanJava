@@ -21,9 +21,25 @@ public class SLCanJava {
      * @throws IOException If the serial port is not found
      */
     public static CanInterface openInterface(final String serialPort, CanInterface.NominalSpeed nominalSpeed, CanInterface.DataSpeed dataSpeed) throws Exception {
+        return openInterface(serialPort, nominalSpeed, dataSpeed, CanInterface.OperationMode.NORMAL);
+    }
+
+    /**
+     * Opens a serial port.
+     * @param serialPort The serial port to open
+     * @param operationMode CAN controller mode (normal/silent)
+     * @return The serial port object
+     * @throws IOException If the serial port is not found
+     */
+    public static CanInterface openInterface(
+            final String serialPort,
+            final CanInterface.NominalSpeed nominalSpeed,
+            final CanInterface.DataSpeed dataSpeed,
+            final CanInterface.OperationMode operationMode
+    ) throws Exception {
         if(SerialPortList.getPortNames(serialPort).length == 0) throw new IOException("Serial port not found");
         final var port = new SerialPort(serialPort);
-        return new CanInterface(port,nominalSpeed,dataSpeed);
+        return new CanInterface(port, nominalSpeed, dataSpeed, operationMode);
     }
 
     /**
