@@ -6,6 +6,7 @@ import jssc.SerialPortEventListener;
 import jssc.SerialPortException;
 import lombok.Getter;
 import lombok.Setter;
+import org.lightsolutions.slcan.SLCanJava;
 import org.lightsolutions.slcan.canbus.CanFrame;
 import org.lightsolutions.slcan.canbus.CanVersion;
 
@@ -22,6 +23,8 @@ import java.util.function.Consumer;
  * frames and dispatches ACK/NACK statuses to pending command callbacks.
  */
 public class CanInterface implements SerialPortEventListener, AutoCloseable {
+
+
 
     public enum Status {
         OK,
@@ -188,7 +191,7 @@ public class CanInterface implements SerialPortEventListener, AutoCloseable {
     private void handleHardwareDisconnect(String reason) {
         if (!this.isRunning) return;
 
-        System.err.println("[CAN HARDWARE] Interface disconnected: " + reason);
+        SLCanJava.LOGGER.severe("[CAN HARDWARE] Interface disconnected: " + reason);
         this.isRunning = false;
         this.processorThread.interrupt();
         this.writeExecutor.shutdownNow();
@@ -311,7 +314,7 @@ public class CanInterface implements SerialPortEventListener, AutoCloseable {
             }
 
             if (this.rxBufferLength + newBytes.length > this.rxBuffer.length) {
-                System.err.println("[ERROR] Buffer overflow!");
+                SLCanJava.LOGGER.severe("[ERROR] Buffer overflow!");
                 this.rxBufferLength = 0;
             }
 
@@ -374,15 +377,15 @@ public class CanInterface implements SerialPortEventListener, AutoCloseable {
                         final var frame = CanFrame.decode(frameBytes);
                         if(this.frameHandler != null) this.frameHandler.accept(this, frame);
                     } catch (Exception e) {
-                        System.err.println("[CAN ERROR] Failed to parse CAN frame: " + e.getMessage());
+                        SLCanJava.LOGGER.warning("[CAN ERROR] Failed to parse CAN frame: " + e.getMessage());
                     }
                 } else if (type == 'V' || type == 'v') {
                     final var version = CanVersion.decode(frameBytes);
                     if (version != null) {
-                        System.out.println("[CAN] Version: " + version.versionString());
+                        SLCanJava.LOGGER.info("[CAN] Version: " + version.versionString());
                     }
                 } else {
-                    System.out.println("[CAN UNKNOWN] Unknown frame type: " + (char) type);
+                    SLCanJava.LOGGER.info("[CAN UNKNOWN] Unknown frame type: " + (char) type);
                 }
             }
         } catch (final InterruptedException e) {
